@@ -14,6 +14,7 @@ import (
 	"github.com/julienschmidt/httprouter"
 
 	"github.com/projectdiscovery/nuclei/v2/pkg/testutils"
+	logutil "github.com/projectdiscovery/utils/log"
 	stringsutil "github.com/projectdiscovery/utils/strings"
 )
 
@@ -59,6 +60,8 @@ var httpTestcases = map[string]testutils.TestCase{
 	"http/custom-attack-type.yaml":                  &customAttackType{},
 	"http/get-all-ips.yaml":                         &scanAllIPS{},
 	"http/get-without-scheme.yaml":                  &httpGetWithoutScheme{},
+	"http/cl-body-without-header.yaml":              &httpCLBodyWithoutHeader{},
+	"http/cl-body-with-header.yaml":                 &httpCLBodyWithHeader{},
 }
 
 type httpInteractshRequest struct{}
@@ -461,8 +464,6 @@ type httpRawGetQuery struct{}
 // Execute executes a test case and returns an error if occurred
 func (h *httpRawGetQuery) Execute(filePath string) error {
 	router := httprouter.New()
-	var routerErr error
-
 	router.GET("/", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		if strings.EqualFold(r.URL.Query().Get("test"), "nuclei") {
 			fmt.Fprintf(w, "Test is test raw-get-query-matcher text")
@@ -475,9 +476,6 @@ func (h *httpRawGetQuery) Execute(filePath string) error {
 	if err != nil {
 		return err
 	}
-	if routerErr != nil {
-		return routerErr
-	}
 
 	return expectResultsCount(results, 1)
 }
@@ -487,8 +485,6 @@ type httpRawGet struct{}
 // Execute executes a test case and returns an error if occurred
 func (h *httpRawGet) Execute(filePath string) error {
 	router := httprouter.New()
-	var routerErr error
-
 	router.GET("/", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		fmt.Fprintf(w, "Test is test raw-get-matcher text")
 	})
@@ -498,9 +494,6 @@ func (h *httpRawGet) Execute(filePath string) error {
 	results, err := testutils.RunNucleiTemplateAndGetResults(filePath, ts.URL, debug)
 	if err != nil {
 		return err
-	}
-	if routerErr != nil {
-		return routerErr
 	}
 
 	return expectResultsCount(results, 1)
@@ -639,6 +632,7 @@ func (h *httpRawCookieReuse) Execute(filePath string) error {
 	return expectResultsCount(results, 1)
 }
 
+// TODO: excluded due to parsing errors with console
 // type httpRawUnsafeRequest struct{
 // Execute executes a test case and returns an error if occurred
 // func (h *httpRawUnsafeRequest) Execute(filePath string) error {
@@ -666,13 +660,12 @@ type httpRequestCondition struct{}
 // Execute executes a test case and returns an error if occurred
 func (h *httpRequestCondition) Execute(filePath string) error {
 	router := httprouter.New()
-	var routerErr error
 
 	router.GET("/200", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 	})
 	router.GET("/400", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-		w.WriteHeader(400)
+		w.WriteHeader(http.StatusBadRequest)
 	})
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -680,9 +673,6 @@ func (h *httpRequestCondition) Execute(filePath string) error {
 	results, err := testutils.RunNucleiTemplateAndGetResults(filePath, ts.URL, debug)
 	if err != nil {
 		return err
-	}
-	if routerErr != nil {
-		return routerErr
 	}
 
 	return expectResultsCount(results, 1)
@@ -693,8 +683,6 @@ type httpRequestSelContained struct{}
 // Execute executes a test case and returns an error if occurred
 func (h *httpRequestSelContained) Execute(filePath string) error {
 	router := httprouter.New()
-	var routerErr error
-
 	router.GET("/", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		_, _ = w.Write([]byte("This is self-contained response"))
 	})
@@ -710,9 +698,6 @@ func (h *httpRequestSelContained) Execute(filePath string) error {
 	results, err := testutils.RunNucleiTemplateAndGetResults(filePath, "", debug)
 	if err != nil {
 		return err
-	}
-	if routerErr != nil {
-		return routerErr
 	}
 
 	return expectResultsCount(results, 1)
@@ -1050,6 +1035,49 @@ type httpGetWithoutScheme struct{}
 // Execute executes a test case and returns an error if occurred
 func (h *httpGetWithoutScheme) Execute(filePath string) error {
 	got, err := testutils.RunNucleiTemplateAndGetResults(filePath, "scanme.sh", debug)
+	if err != nil {
+		return err
+	}
+	return expectResultsCount(got, 1)
+}
+
+// content-length in case the response has no header but has a body
+type httpCLBodyWithoutHeader struct{}
+
+// Execute executes a test case and returns an error if occurred
+func (h *httpCLBodyWithoutHeader) Execute(filePath string) error {
+	logutil.DisableDefaultLogger()
+	defer logutil.EnableDefaultLogger()
+
+	router := httprouter.New()
+	router.GET("/", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+		w.Header()["Content-Length"] = []string{"-1"}
+		fmt.Fprintf(w, "this is a test")
+	})
+	ts := httptest.NewTLSServer(router)
+	defer ts.Close()
+
+	got, err := testutils.RunNucleiTemplateAndGetResults(filePath, ts.URL, debug)
+	if err != nil {
+		return err
+	}
+	return expectResultsCount(got, 1)
+}
+
+// content-length in case the response has content-length header and a body
+type httpCLBodyWithHeader struct{}
+
+// Execute executes a test case and returns an error if occurred
+func (h *httpCLBodyWithHeader) Execute(filePath string) error {
+	router := httprouter.New()
+	router.GET("/", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+		w.Header()["Content-Length"] = []string{"50000"}
+		fmt.Fprintf(w, "this is a test")
+	})
+	ts := httptest.NewTLSServer(router)
+	defer ts.Close()
+
+	got, err := testutils.RunNucleiTemplateAndGetResults(filePath, ts.URL, debug)
 	if err != nil {
 		return err
 	}
